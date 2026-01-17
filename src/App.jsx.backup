@@ -1,0 +1,2130 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Camera, Download, RotateCcw, Layout, Filter, ArrowLeft, Zap, Video } from 'lucide-react';
+
+const ComicPhotobox = () => {
+  const [page, setPage] = useState('landing');
+  const [photos, setPhotos] = useState([]);
+  const [layout, setLayout] = useState(3);
+  const [filter, setFilter] = useState('normal');
+  const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
+  const [stream, setStream] = useState(null);
+  const [filteredPhotos, setFilteredPhotos] = useState([]);
+  const [customMoment, setCustomMoment] = useState('');
+  const [isCreatingGIF, setIsCreatingGIF] = useState(false);
+  const [gifProgress, setGifProgress] = useState(0);
+  const [videoClips, setVideoClips] = useState([]); // Store video clips for live photos
+  const [countdown, setCountdown] = useState(0); // Countdown timer (3, 2, 1)
+  const [isCountingDown, setIsCountingDown] = useState(false); // Whether countdown is active
+  
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const downloadRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const videoRecordingStartTime = useRef(null);
+
+  useEffect(() => {
+    if (page === 'camera' && videoRef.current && !stream) {
+      startCamera();
+    }
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [page]);
+
+  // Process photos with filter when photos or filter changes
+  useEffect(() => {
+    if (photos.length === 0) {
+      setFilteredPhotos([]);
+      return;
+    }
+
+    const processPhotos = async () => {
+      const processed = await Promise.all(
+        photos.map(async (photo, index) => {
+          if (!photo) return { index, filteredSrc: null }; // Keep index for null photos
+          return new Promise((resolve) => {
+            const tempCanvas = document.createElement('canvas');
+            const tempImg = new Image();
+            tempImg.onload = () => {
+              const targetWidth = 800;
+              const targetHeight = 600;
+              const targetAspect = targetWidth / targetHeight;
+              
+              tempCanvas.width = targetWidth;
+              tempCanvas.height = targetHeight;
+              const tempCtx = tempCanvas.getContext('2d');
+              
+              // Calculate crop dimensions
+              const imgAspect = tempImg.width / tempImg.height;
+              let sourceWidth, sourceHeight, sourceX, sourceY;
+              
+              if (imgAspect > targetAspect) {
+                // Image is wider, crop width
+                sourceHeight = tempImg.height;
+                sourceWidth = sourceHeight * targetAspect;
+                sourceX = (tempImg.width - sourceWidth) / 2;
+                sourceY = 0;
+              } else {
+                // Image is taller, crop height
+                sourceWidth = tempImg.width;
+                sourceHeight = sourceWidth / targetAspect;
+                sourceX = 0;
+                sourceY = (tempImg.height - sourceHeight) / 2;
+              }
+              
+              // Draw cropped image
+              tempCtx.drawImage(
+                tempImg,
+                sourceX, sourceY, sourceWidth, sourceHeight,
+                0, 0, targetWidth, targetHeight
+              );
+              
+              const imageData = tempCtx.getImageData(0, 0, targetWidth, targetHeight);
+              const filteredData = applyPixelatedFilter(tempCtx, imageData, filter);
+              tempCtx.putImageData(filteredData, 0, 0);
+              const filteredSrc = tempCanvas.toDataURL();
+              resolve({ index, filteredSrc });
+            };
+            tempImg.src = photo;
+          });
+        })
+      );
+      // Create array with same length as photos, maintaining index mapping
+      const filteredArray = new Array(photos.length).fill(null);
+      processed.forEach(({ index, filteredSrc }) => {
+        filteredArray[index] = filteredSrc;
+      });
+      setFilteredPhotos(filteredArray);
+    };
+
+    processPhotos();
+  }, [photos, filter]);
+
+  const startCamera = async () => {
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'user', width: 1280, height: 720 } 
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+      }
+      setStream(mediaStream);
+      
+      // Start continuous video recording for live photos
+      startVideoRecording(mediaStream);
+    } catch (err) {
+      console.error('Camera error:', err);
+      alert('Tidak dapat mengakses kamera. Pastikan izin kamera telah diberikan.');
+    }
+  };
+  
+  const startVideoRecording = (mediaStream) => {
+    try {
+      // Stop previous recording if any
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      
+      recordedChunksRef.current = [];
+      videoRecordingStartTime.current = Date.now();
+      
+      const options = {
+        mimeType: 'video/webm;codecs=vp9',
+        videoBitsPerSecond: 2500000 // 2.5 Mbps
+      };
+      
+      // Fallback to other codecs if vp9 not supported
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+          options.mimeType = 'video/webm;codecs=vp8';
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+          options.mimeType = 'video/webm';
+        }
+      }
+      
+      const mediaRecorder = new MediaRecorder(mediaStream, options);
+      mediaRecorderRef.current = mediaRecorder;
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+      
+      mediaRecorder.start(100); // Collect data every 100ms
+      console.log('Video recording started for live photo');
+    } catch (error) {
+      console.error('Error starting video recording:', error);
+    }
+  };
+  
+  const stopVideoRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+  
+  const getVideoClip = () => {
+    return new Promise((resolve) => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        const chunks = [...recordedChunksRef.current];
+        recordedChunksRef.current = [];
+        
+        // Set up handler before stopping
+        const handleStop = () => {
+          if (chunks.length > 0) {
+            const blob = new Blob(chunks, { type: 'video/webm' });
+            resolve(blob);
+          } else {
+            resolve(null);
+          }
+          mediaRecorderRef.current.removeEventListener('stop', handleStop);
+        };
+        
+        mediaRecorderRef.current.addEventListener('stop', handleStop);
+        mediaRecorderRef.current.stop();
+      } else {
+        resolve(null);
+      }
+    });
+  };
+
+  const applyPixelatedFilter = (ctx, imgData, filterType) => {
+    const pixels = imgData.data;
+    
+    // If normal filter, return original without grayscale conversion
+    if (filterType === 'normal') {
+      return imgData;
+    }
+    
+    // Convert to grayscale first
+    for (let i = 0; i < pixels.length; i += 4) {
+      const gray = pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114;
+      pixels[i] = gray;
+      pixels[i + 1] = gray;
+      pixels[i + 2] = gray;
+    }
+    
+    if (filterType === 'halftone') {
+      // Halftone effect - lighter and more subtle
+      const dotSize = 2;
+      const spacing = 6; // Increased spacing for lighter effect
+      
+      for (let y = 0; y < imgData.height; y += spacing) {
+        for (let x = 0; x < imgData.width; x += spacing) {
+          // Sample average brightness in the area
+          let totalBrightness = 0;
+          let sampleCount = 0;
+          
+          for (let sy = 0; sy < spacing && (y + sy) < imgData.height; sy++) {
+            for (let sx = 0; sx < spacing && (x + sx) < imgData.width; sx++) {
+              const idx = ((y + sy) * imgData.width + (x + sx)) * 4;
+              totalBrightness += pixels[idx];
+              sampleCount++;
+            }
+          }
+          
+          const avgBrightness = totalBrightness / sampleCount;
+          // Lighter halftone: smaller dots, more white space preserved
+          const dotRadius = Math.floor((avgBrightness / 255) * (dotSize * 0.6)); // Reduced dot size
+          
+          // Draw halftone dot (only if dark enough)
+          if (avgBrightness < 200) { // Only draw dots for darker areas
+            for (let dy = -dotSize; dy <= dotSize; dy++) {
+              for (let dx = -dotSize; dx <= dotSize; dx++) {
+                const px = x + spacing / 2 + dx;
+                const py = y + spacing / 2 + dy;
+                
+                if (px >= 0 && px < imgData.width && py >= 0 && py < imgData.height) {
+                  const dist = Math.sqrt(dx * dx + dy * dy);
+                  const idx = (py * imgData.width + px) * 4;
+                  
+                  if (dist <= dotRadius) {
+                    // Blend with original instead of pure black
+                    const blendFactor = 0.7; // Keep some original color
+                    pixels[idx] = pixels[idx] * blendFactor;
+                    pixels[idx + 1] = pixels[idx + 1] * blendFactor;
+                    pixels[idx + 2] = pixels[idx + 2] * blendFactor;
+                  }
+                  // Keep white background for lighter areas
+                }
+              }
+            }
+          }
+        }
+      }
+    } else if (filterType === 'dithered') {
+      // Floyd-Steinberg dithering
+      for (let y = 0; y < imgData.height; y++) {
+        for (let x = 0; x < imgData.width; x++) {
+          const i = (y * imgData.width + x) * 4;
+          const oldPixel = pixels[i];
+          const newPixel = oldPixel < 128 ? 0 : 255;
+          pixels[i] = newPixel;
+          pixels[i + 1] = newPixel;
+          pixels[i + 2] = newPixel;
+          
+          const err = oldPixel - newPixel;
+          if (x + 1 < imgData.width) {
+            const i1 = i + 4;
+            pixels[i1] += err * 7 / 16;
+          }
+          if (y + 1 < imgData.height) {
+            if (x > 0) {
+              const i2 = ((y + 1) * imgData.width + (x - 1)) * 4;
+              pixels[i2] += err * 3 / 16;
+            }
+            const i3 = ((y + 1) * imgData.width + x) * 4;
+            pixels[i3] += err * 5 / 16;
+            if (x + 1 < imgData.width) {
+              const i4 = ((y + 1) * imgData.width + (x + 1)) * 4;
+              pixels[i4] += err * 1 / 16;
+            }
+          }
+        }
+      }
+    } else if (filterType === 'pixelated') {
+      // Pixelation effect
+      const pixelSize = 6;
+      for (let y = 0; y < imgData.height; y += pixelSize) {
+        for (let x = 0; x < imgData.width; x += pixelSize) {
+          const i = (y * imgData.width + x) * 4;
+          const avgColor = pixels[i];
+          
+          for (let dy = 0; dy < pixelSize; dy++) {
+            for (let dx = 0; dx < pixelSize; dx++) {
+              if (y + dy < imgData.height && x + dx < imgData.width) {
+                const idx = ((y + dy) * imgData.width + (x + dx)) * 4;
+                pixels[idx] = avgColor;
+                pixels[idx + 1] = avgColor;
+                pixels[idx + 2] = avgColor;
+              }
+            }
+          }
+        }
+      }
+    } else if (filterType === 'sepia') {
+      // Sepia/vintage effect - warm brown tone
+      for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i];
+        const g = pixels[i + 1];
+        const b = pixels[i + 2];
+        
+        // Convert to sepia
+        const tr = Math.min(255, (r * 0.393) + (g * 0.769) + (b * 0.189));
+        const tg = Math.min(255, (r * 0.349) + (g * 0.686) + (b * 0.168));
+        const tb = Math.min(255, (r * 0.272) + (g * 0.534) + (b * 0.131));
+        
+        pixels[i] = tr;
+        pixels[i + 1] = tg;
+        pixels[i + 2] = tb;
+      }
+    }
+    
+    return imgData;
+  };
+
+  const startCountdown = () => {
+    // Start video recording immediately when countdown starts
+    if (stream && (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive')) {
+      startVideoRecording(stream);
+    }
+    
+    setIsCountingDown(true);
+    setCountdown(3);
+    
+    const countdownInterval = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(countdownInterval);
+          setIsCountingDown(false);
+          // Capture photo after countdown (video already recording for 3 seconds)
+          capturePhoto();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const capturePhoto = async () => {
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    const targetWidth = 800;
+    const targetHeight = 600;
+    const targetAspect = targetWidth / targetHeight;
+    
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const ctx = canvas.getContext('2d');
+    
+    // Calculate crop dimensions to maintain aspect ratio
+    const videoAspect = video.videoWidth / video.videoHeight;
+    let sourceWidth, sourceHeight, sourceX, sourceY;
+    
+    if (videoAspect > targetAspect) {
+      // Video is wider, crop width
+      sourceHeight = video.videoHeight;
+      sourceWidth = sourceHeight * targetAspect;
+      sourceX = (video.videoWidth - sourceWidth) / 2;
+      sourceY = 0;
+    } else {
+      // Video is taller, crop height
+      sourceWidth = video.videoWidth;
+      sourceHeight = sourceWidth / targetAspect;
+      sourceX = 0;
+      sourceY = (video.videoHeight - sourceHeight) / 2;
+    }
+    
+    // Draw cropped image
+    ctx.drawImage(
+      video,
+      sourceX, sourceY, sourceWidth, sourceHeight,
+      0, 0, targetWidth, targetHeight
+    );
+    
+    const photoData = canvas.toDataURL('image/png');
+    
+    // Get video clip for live photo (3 seconds around capture moment)
+    let videoClip = null;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      // Stop current recording and get the clip
+      videoClip = await getVideoClip();
+      // Restart recording for next photo
+      if (stream) {
+        startVideoRecording(stream);
+      }
+    }
+    
+    const newPhotos = [...photos];
+    newPhotos[currentPhotoIndex] = photoData;
+    setPhotos(newPhotos);
+    
+    const newVideoClips = [...videoClips];
+    newVideoClips[currentPhotoIndex] = videoClip;
+    setVideoClips(newVideoClips);
+
+    // Check if this is a retake: all other photo slots (0 to layout-1) are already filled
+    let allOtherPhotosFilled = true;
+    for (let i = 0; i < layout; i++) {
+      if (i !== currentPhotoIndex && (newPhotos[i] === null || newPhotos[i] === undefined)) {
+        allOtherPhotosFilled = false;
+        break;
+      }
+    }
+    
+    if (allOtherPhotosFilled || currentPhotoIndex >= layout - 1) {
+      // If retaking (all other photos filled) or last photo, go directly to preview
+      // Stop video recording
+      stopVideoRecording();
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        setStream(null);
+      }
+      setPage('preview');
+    } else {
+      // Continue to next photo
+      setCurrentPhotoIndex(currentPhotoIndex + 1);
+    }
+  };
+
+  const retakePhoto = (index) => {
+    // Only reset the specific photo, keep others
+    const newPhotos = [...photos];
+    newPhotos[index] = null; // Mark as empty
+    setPhotos(newPhotos);
+    
+    const newVideoClips = [...videoClips];
+    newVideoClips[index] = null; // Also reset video clip
+    setVideoClips(newVideoClips);
+    
+    setCurrentPhotoIndex(index);
+    setPage('camera');
+    // Restart camera if needed
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+    // Restart video recording
+    if (stream) {
+      startVideoRecording(stream);
+    }
+  };
+
+  const downloadStrip = async () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    
+    const stripWidth = 800;
+    const photoHeight = 600;
+    const borderWidth = 30;
+    const innerBorder = 20;
+    
+    canvas.width = stripWidth;
+    // Add extra height for header and footer decorations
+    const headerPadding = 80;
+    const footerPadding = 100;
+    canvas.height = (photoHeight * layout) + (borderWidth * 2) + (innerBorder * (layout - 1)) + headerPadding + footerPadding;
+    
+    // White background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Load all images first
+    const imagePromises = photos
+      .filter(photo => photo !== null)
+      .map((photo, index) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve({ img, index });
+          img.src = photo;
+        });
+      });
+    
+    const loadedImages = await Promise.all(imagePromises);
+    
+    // Draw photos with filter (offset by header padding)
+    const photoStartY = borderWidth + headerPadding;
+    loadedImages.forEach(({ img, index }) => {
+      const yPos = photoStartY + (index * (photoHeight + innerBorder));
+      const drawWidth = stripWidth - (borderWidth * 2);
+      const targetAspect = drawWidth / photoHeight;
+      
+      // Calculate crop dimensions
+      const imgAspect = img.width / img.height;
+      let sourceWidth, sourceHeight, sourceX, sourceY;
+      
+      if (imgAspect > targetAspect) {
+        // Image is wider, crop width
+        sourceHeight = img.height;
+        sourceWidth = sourceHeight * targetAspect;
+        sourceX = (img.width - sourceWidth) / 2;
+        sourceY = 0;
+      } else {
+        // Image is taller, crop height
+        sourceWidth = img.width;
+        sourceHeight = sourceWidth / targetAspect;
+        sourceX = 0;
+        sourceY = (img.height - sourceHeight) / 2;
+      }
+      
+      // Draw cropped image
+      ctx.drawImage(img, sourceX, sourceY, sourceWidth, sourceHeight, borderWidth, yPos, drawWidth, photoHeight);
+      
+      // Apply filter
+      const imageData = ctx.getImageData(borderWidth, yPos, drawWidth, photoHeight);
+      const filteredData = applyPixelatedFilter(ctx, imageData, filter);
+      ctx.putImageData(filteredData, borderWidth, yPos);
+      
+      // Triple border effect (comic style)
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 8;
+      ctx.strokeRect(borderWidth, yPos, stripWidth - (borderWidth * 2), photoHeight);
+      
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(borderWidth + 12, yPos + 12, stripWidth - (borderWidth * 2) - 24, photoHeight - 24);
+      
+      // Retro decorative elements for each photo
+      ctx.fillStyle = '#000000';
+      
+      // Corner decorations - retro style
+      const cornerSize = 20;
+      const cornerOffset = 8;
+      
+      // Top-left corner decoration
+      ctx.beginPath();
+      ctx.moveTo(borderWidth - cornerOffset, yPos - cornerOffset);
+      ctx.lineTo(borderWidth + cornerSize, yPos - cornerOffset);
+      ctx.lineTo(borderWidth - cornerOffset, yPos + cornerSize);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Top-right corner decoration
+      ctx.beginPath();
+      ctx.moveTo(stripWidth - borderWidth + cornerOffset, yPos - cornerOffset);
+      ctx.lineTo(stripWidth - borderWidth - cornerSize, yPos - cornerOffset);
+      ctx.lineTo(stripWidth - borderWidth + cornerOffset, yPos + cornerSize);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Bottom-left corner decoration
+      ctx.beginPath();
+      ctx.moveTo(borderWidth - cornerOffset, yPos + photoHeight + cornerOffset);
+      ctx.lineTo(borderWidth + cornerSize, yPos + photoHeight + cornerOffset);
+      ctx.lineTo(borderWidth - cornerOffset, yPos + photoHeight - cornerSize);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Bottom-right corner decoration
+      ctx.beginPath();
+      ctx.moveTo(stripWidth - borderWidth + cornerOffset, yPos + photoHeight + cornerOffset);
+      ctx.lineTo(stripWidth - borderWidth - cornerSize, yPos + photoHeight + cornerOffset);
+      ctx.lineTo(stripWidth - borderWidth + cornerOffset, yPos + photoHeight - cornerSize);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Retro photo number badge (top right of each photo)
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(stripWidth - borderWidth - 50, yPos + 10, 40, 30);
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(stripWidth - borderWidth - 50, yPos + 10, 40, 30);
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 20px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`#${index + 1}`, stripWidth - borderWidth - 30, yPos + 25);
+      
+      // Retro stickers and text on each photo
+      const stickers = [
+        { text: 'INSTANT', x: borderWidth + 15, y: yPos + photoHeight - 50, color: '#ffff00', rotate: -8 },
+        { text: 'VINTAGE', x: stripWidth - borderWidth - 100, y: yPos + photoHeight - 80, color: '#ff6b6b', rotate: 5 },
+        { text: 'RETRO', x: borderWidth + 20, y: yPos + 40, color: '#4ecdc4', rotate: -5 },
+        { text: 'CLASSIC', x: stripWidth - borderWidth - 90, y: yPos + 50, color: '#ffe66d', rotate: 8 },
+        { text: 'MEMORY', x: borderWidth + 15, y: yPos + photoHeight - 100, color: '#95e1d3', rotate: -3 },
+        { text: 'KEEP', x: stripWidth - borderWidth - 70, y: yPos + photoHeight - 30, color: '#f38181', rotate: 6 }
+      ];
+      
+      // Draw stickers (rotate through available stickers based on index)
+      const stickerIndex = index % stickers.length;
+      const sticker = stickers[stickerIndex];
+      
+      // Save context for rotation
+      ctx.save();
+      
+      // Draw sticker background (rounded rectangle)
+      const stickerWidth = sticker.text.length * 12 + 20;
+      const stickerHeight = 35;
+      const stickerX = sticker.x;
+      const stickerY = sticker.y;
+      
+      // Rotate context
+      ctx.translate(stickerX + stickerWidth / 2, stickerY + stickerHeight / 2);
+      ctx.rotate(sticker.rotate * Math.PI / 180);
+      
+      // Draw sticker background (rounded rectangle manually)
+      const radius = 8;
+      const x = -stickerWidth / 2;
+      const y = -stickerHeight / 2;
+      const w = stickerWidth;
+      const h = stickerHeight;
+      
+      ctx.fillStyle = sticker.color;
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + w - radius, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+      ctx.lineTo(x + w, y + h - radius);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      ctx.lineTo(x + radius, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Draw sticker border
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      
+      // Draw sticker text
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 18px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(sticker.text, 0, 0);
+      
+      // Restore context
+      ctx.restore();
+      
+      // Additional retro text decorations (only on photos, not overlapping with footer)
+      // Only show text on photos that are not the last one (to avoid overlap with footer)
+      if (index < layout - 1) {
+        const retroTexts = [
+          { text: 'INSTANT PHOTOS', x: borderWidth + drawWidth / 2, y: yPos + 30 }
+        ];
+        
+        // Draw retro text (one per photo, rotating)
+        const textIndex = index % retroTexts.length;
+        const retroText = retroTexts[textIndex];
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 4;
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // Draw text with outline effect
+        ctx.strokeText(retroText.text, retroText.x, retroText.y);
+        ctx.fillText(retroText.text, retroText.x, retroText.y);
+      }
+      
+      // Retro decorative dots pattern (top border)
+      ctx.fillStyle = '#000000';
+      for (let i = 0; i < 8; i++) {
+        const dotX = borderWidth + 20 + (i * 90);
+        const dotY = yPos - 15;
+        ctx.beginPath();
+        ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      // Retro decorative lines (sides)
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 2;
+      // Left side lines
+      for (let i = 0; i < 5; i++) {
+        const lineY = yPos + 50 + (i * 100);
+        ctx.beginPath();
+        ctx.moveTo(borderWidth - 12, lineY);
+        ctx.lineTo(borderWidth - 5, lineY);
+        ctx.stroke();
+      }
+      // Right side lines
+      for (let i = 0; i < 5; i++) {
+        const lineY = yPos + 50 + (i * 100);
+        ctx.beginPath();
+        ctx.moveTo(stripWidth - borderWidth + 5, lineY);
+        ctx.lineTo(stripWidth - borderWidth + 12, lineY);
+        ctx.stroke();
+      }
+    });
+    
+    // Retro header decoration with stickers
+    const headerY = 25; // Increased padding from top
+    
+    // "PHOTO BOOTH" text at top with retro style (slightly above line)
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    const textY = headerY + 40; // Slightly above line (line is at headerY + 50)
+    ctx.strokeText('PHOTO BOOTH', canvas.width / 2, textY);
+    ctx.fillText('PHOTO BOOTH', canvas.width / 2, textY);
+    
+    // Retro sticker on header - "INSTANT" (below line)
+    ctx.save();
+    ctx.translate(120, headerY + 30);
+    ctx.rotate(-12 * Math.PI / 180);
+    ctx.fillStyle = '#ffff00';
+    const instantWidth = 80;
+    const instantHeight = 30;
+    ctx.beginPath();
+    ctx.moveTo(0, instantHeight / 2);
+    ctx.lineTo(instantWidth, instantHeight / 2);
+    ctx.lineTo(instantWidth - 10, -instantHeight / 2);
+    ctx.lineTo(10, -instantHeight / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('INSTANT', instantWidth / 2, 0);
+    ctx.restore();
+    
+    // Retro sticker on header - "VINTAGE" (below line)
+    ctx.save();
+    ctx.translate(canvas.width - 120, headerY + 30);
+    ctx.rotate(12 * Math.PI / 180);
+    ctx.fillStyle = '#ff6b6b';
+    const vintageWidth = 90;
+    const vintageHeight = 30;
+    ctx.beginPath();
+    ctx.moveTo(0, vintageHeight / 2);
+    ctx.lineTo(vintageWidth, vintageHeight / 2);
+    ctx.lineTo(vintageWidth - 10, -vintageHeight / 2);
+    ctx.lineTo(10, -vintageHeight / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('VINTAGE', vintageWidth / 2, 0);
+    ctx.restore();
+    
+    // Decorative lines under header
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(canvas.width / 2 - 100, headerY + 50);
+    ctx.lineTo(canvas.width / 2 + 100, headerY + 50);
+    ctx.stroke();
+    
+    // Retro decorative corner elements (more elaborate)
+    const cornerRadius = 12;
+    const cornerDistance = 20;
+    
+    // Top-left corner
+    ctx.fillStyle = '#000000';
+    ctx.beginPath();
+    ctx.arc(cornerDistance, cornerDistance, cornerRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(cornerDistance - cornerRadius, cornerDistance);
+    ctx.lineTo(cornerDistance - cornerRadius - 8, cornerDistance);
+    ctx.lineTo(cornerDistance, cornerDistance - cornerRadius - 8);
+    ctx.lineTo(cornerDistance, cornerDistance - cornerRadius);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Top-right corner
+    ctx.beginPath();
+    ctx.arc(canvas.width - cornerDistance, cornerDistance, cornerRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(canvas.width - cornerDistance + cornerRadius, cornerDistance);
+    ctx.lineTo(canvas.width - cornerDistance + cornerRadius + 8, cornerDistance);
+    ctx.lineTo(canvas.width - cornerDistance, cornerDistance - cornerRadius - 8);
+    ctx.lineTo(canvas.width - cornerDistance, cornerDistance - cornerRadius);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Bottom-left corner
+    ctx.beginPath();
+    ctx.arc(cornerDistance, canvas.height - cornerDistance, cornerRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(cornerDistance - cornerRadius, canvas.height - cornerDistance);
+    ctx.lineTo(cornerDistance - cornerRadius - 8, canvas.height - cornerDistance);
+    ctx.lineTo(cornerDistance, canvas.height - cornerDistance + cornerRadius + 8);
+    ctx.lineTo(cornerDistance, canvas.height - cornerDistance + cornerRadius);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Bottom-right corner
+    ctx.beginPath();
+    ctx.arc(canvas.width - cornerDistance, canvas.height - cornerDistance, cornerRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(canvas.width - cornerDistance + cornerRadius, canvas.height - cornerDistance);
+    ctx.lineTo(canvas.width - cornerDistance + cornerRadius + 8, canvas.height - cornerDistance);
+    ctx.lineTo(canvas.width - cornerDistance, canvas.height - cornerDistance + cornerRadius + 8);
+    ctx.lineTo(canvas.width - cornerDistance, canvas.height - cornerDistance + cornerRadius);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Retro footer decoration with stickers and text
+    const footerY = canvas.height - 20; // Bottom padding
+    
+    // Custom moment text (above line)
+    if (customMoment && customMoment.trim()) {
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 24px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      const momentY = footerY - 38; // Closer to line
+      ctx.strokeText(customMoment.toUpperCase(), canvas.width / 2, momentY);
+      ctx.fillText(customMoment.toUpperCase(), canvas.width / 2, momentY);
+    }
+    
+    // Decorative line above date
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 3;
+    const lineY = customMoment && customMoment.trim() ? footerY - 28 : footerY - 25;
+    ctx.beginPath();
+    ctx.moveTo(canvas.width / 2 - 100, lineY);
+    ctx.lineTo(canvas.width / 2 + 100, lineY);
+    ctx.stroke();
+    
+    // Date stamp style text (at the very bottom)
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 18px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeText(dateStr.toUpperCase(), canvas.width / 2, footerY);
+    ctx.fillText(dateStr.toUpperCase(), canvas.width / 2, footerY);
+    
+    // Retro sticker on footer left - "RETRO"
+    ctx.save();
+    ctx.translate(100, footerY - 50);
+    ctx.rotate(-8 * Math.PI / 180);
+    ctx.fillStyle = '#4ecdc4';
+    const retroWidth = 70;
+    const retroHeight = 25;
+    ctx.beginPath();
+    ctx.moveTo(0, retroHeight / 2);
+    ctx.lineTo(retroWidth, retroHeight / 2);
+    ctx.lineTo(retroWidth - 8, -retroHeight / 2);
+    ctx.lineTo(8, -retroHeight / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('RETRO', retroWidth / 2, 0);
+    ctx.restore();
+    
+    // Retro sticker on footer right - "CLASSIC"
+    ctx.save();
+    ctx.translate(canvas.width - 100, footerY - 50);
+    ctx.rotate(8 * Math.PI / 180);
+    ctx.fillStyle = '#95e1d3';
+    const classicWidth = 80;
+    const classicHeight = 25;
+    ctx.beginPath();
+    ctx.moveTo(0, classicHeight / 2);
+    ctx.lineTo(classicWidth, classicHeight / 2);
+    ctx.lineTo(classicWidth - 8, -classicHeight / 2);
+    ctx.lineTo(8, -classicHeight / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('CLASSIC', classicWidth / 2, 0);
+    ctx.restore();
+    
+    // Retro pattern dots on sides
+    ctx.fillStyle = '#000000';
+    for (let i = 0; i < 10; i++) {
+      const dotY = 60 + (i * 50);
+      if (dotY < canvas.height - 60) {
+        // Left side dots
+        ctx.beginPath();
+        ctx.arc(15, dotY, 3, 0, Math.PI * 2);
+        ctx.fill();
+        // Right side dots
+        ctx.beginPath();
+        ctx.arc(canvas.width - 15, dotY, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    
+    // Outer thick border with retro style
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 12;
+    ctx.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
+    
+    // Inner decorative border
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(18, 18, canvas.width - 36, canvas.height - 36);
+    
+    const link = downloadRef.current;
+    link.href = canvas.toDataURL('image/png');
+    link.download = `comic-strip-${Date.now()}.png`;
+    link.click();
+  };
+
+  const downloadGIF = async () => {
+    // Check if we have video clips
+    const availableClips = videoClips.filter(clip => clip !== null);
+    if (availableClips.length === 0) {
+      alert('Tidak ada video untuk dibuat Live Photo! Pastikan video sudah direkam saat mengambil foto.');
+      return;
+    }
+
+    setIsCreatingGIF(true);
+    setGifProgress(0);
+
+    try {
+      console.log('Starting Live Photo video creation...');
+      
+      // Video settings - 1080x1920 vertical video with black background
+      const videoWidth = 1080;
+      const videoHeight = 1920;
+      
+      // Original photo strip dimensions
+      const originalStripWidth = 800;
+      const originalPhotoHeight = 600;
+      const originalBorderWidth = 30;
+      const originalInnerBorder = 20;
+      const originalHeaderPadding = 80;
+      const originalFooterPadding = 100;
+      const originalTotalHeight = (originalPhotoHeight * layout) + (originalBorderWidth * 2) + (originalInnerBorder * (layout - 1)) + originalHeaderPadding + originalFooterPadding;
+      
+      // Calculate scale to fit strip in video height (with some padding)
+      const maxStripHeight = videoHeight - 100; // 50px padding top and bottom
+      const scale = Math.min(maxStripHeight / originalTotalHeight, videoWidth / originalStripWidth);
+      
+      // Scaled dimensions
+      const stripWidth = originalStripWidth * scale;
+      const photoHeight = originalPhotoHeight * scale;
+      const borderWidth = originalBorderWidth * scale;
+      const innerBorder = originalInnerBorder * scale;
+      const headerPadding = originalHeaderPadding * scale;
+      const footerPadding = originalFooterPadding * scale;
+      const totalHeight = originalTotalHeight * scale;
+      
+      // Center position for strip
+      const stripX = (videoWidth - stripWidth) / 2;
+      const stripY = (videoHeight - totalHeight) / 2;
+      
+      console.log('Creating video canvas...');
+      setGifProgress(10);
+      
+      // Create canvas for video (1080x1920)
+      const videoCanvas = document.createElement('canvas');
+      videoCanvas.width = videoWidth;
+      videoCanvas.height = videoHeight;
+      const videoCtx = videoCanvas.getContext('2d');
+      
+      // Create video stream from canvas
+      const canvasStream = videoCanvas.captureStream(30); // 30 fps
+      
+      // Try to use mp4 codec, fallback to webm
+      let mimeType = 'video/webm;codecs=vp9';
+      if (MediaRecorder.isTypeSupported('video/mp4')) {
+        mimeType = 'video/mp4';
+      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+        mimeType = 'video/webm;codecs=vp9';
+      } else if (MediaRecorder.isTypeSupported('video/webm')) {
+        mimeType = 'video/webm';
+      }
+      
+      const mediaRecorder = new MediaRecorder(canvasStream, {
+        mimeType: mimeType,
+        videoBitsPerSecond: 5000000 // 5 Mbps
+      });
+      
+      const chunks = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      
+      mediaRecorder.onstop = () => {
+        console.log('Video recording stopped');
+        const blob = new Blob(chunks, { type: mimeType });
+        const fileExtension = mimeType.includes('mp4') ? 'mp4' : 'webm';
+        
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `live-photo-strip-${Date.now()}.${fileExtension}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        console.log('Live Photo video downloaded');
+        setIsCreatingGIF(false);
+        setGifProgress(0);
+      };
+      
+      // Start recording
+      mediaRecorder.start(100);
+      setGifProgress(20);
+      
+      // Load all video elements
+      console.log('Loading video clips...');
+      setGifProgress(30);
+      
+      const videoElements = await Promise.all(
+        videoClips
+          .filter(clip => clip !== null)
+          .map((clip, index) => {
+            return new Promise((resolve) => {
+              const videoElement = document.createElement('video');
+              videoElement.src = URL.createObjectURL(clip);
+              videoElement.muted = true;
+              videoElement.playsInline = true;
+              videoElement.loop = false; // We'll control looping manually
+              
+              videoElement.onloadedmetadata = () => {
+                resolve({ video: videoElement, index });
+              };
+            });
+          })
+      );
+      
+      console.log('Video clips loaded:', videoElements.length);
+      setGifProgress(50);
+      
+      // Video timing settings
+      const secondsPerPhoto = 3; // Each photo video plays for 3 seconds
+      const holdDuration = 2; // Hold last frame for 2 seconds
+      const loopCount = 3; // Loop 3 times
+      const totalVideoDuration = (secondsPerPhoto + holdDuration) * loopCount * 1000; // 15 seconds total (5s x 3 loops)
+      
+      // Start all videos
+      videoElements.forEach(({ video }) => {
+        video.play();
+      });
+      
+      // Draw video strip frame by frame (all videos playing simultaneously, each looping 3x for 3 seconds)
+      const photoStartY = stripY + borderWidth + headerPadding;
+      const drawWidth = stripWidth - (borderWidth * 2);
+      const targetAspect = drawWidth / photoHeight;
+      const startTime = Date.now();
+      const headerY = stripY + 25 * scale;
+      
+      // Helper function to draw all decorative elements (same as photo strip, scaled)
+      const drawAllDecorations = (ctx, yPos, index, isVideo = false) => {
+        // Triple border effect (comic style)
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 8 * scale;
+        ctx.strokeRect(stripX + borderWidth, yPos, stripWidth - (borderWidth * 2), photoHeight);
+        
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 3 * scale;
+        ctx.strokeRect(stripX + borderWidth + 12 * scale, yPos + 12 * scale, stripWidth - (borderWidth * 2) - 24 * scale, photoHeight - 24 * scale);
+        
+        // Retro decorative elements for each photo
+        ctx.fillStyle = '#000000';
+        
+        // Corner decorations - retro style
+        const cornerSize = 20 * scale;
+        const cornerOffset = 8 * scale;
+        
+        // Top-left corner decoration
+        ctx.beginPath();
+        ctx.moveTo(stripX + borderWidth - cornerOffset, yPos - cornerOffset);
+        ctx.lineTo(stripX + borderWidth + cornerSize, yPos - cornerOffset);
+        ctx.lineTo(stripX + borderWidth - cornerOffset, yPos + cornerSize);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Top-right corner decoration
+        ctx.beginPath();
+        ctx.moveTo(stripX + stripWidth - borderWidth + cornerOffset, yPos - cornerOffset);
+        ctx.lineTo(stripX + stripWidth - borderWidth - cornerSize, yPos - cornerOffset);
+        ctx.lineTo(stripX + stripWidth - borderWidth + cornerOffset, yPos + cornerSize);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Bottom-left corner decoration
+        ctx.beginPath();
+        ctx.moveTo(stripX + borderWidth - cornerOffset, yPos + photoHeight + cornerOffset);
+        ctx.lineTo(stripX + borderWidth + cornerSize, yPos + photoHeight + cornerOffset);
+        ctx.lineTo(stripX + borderWidth - cornerOffset, yPos + photoHeight - cornerSize);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Bottom-right corner decoration
+        ctx.beginPath();
+        ctx.moveTo(stripX + stripWidth - borderWidth + cornerOffset, yPos + photoHeight + cornerOffset);
+        ctx.lineTo(stripX + stripWidth - borderWidth - cornerSize, yPos + photoHeight + cornerOffset);
+        ctx.lineTo(stripX + stripWidth - borderWidth + cornerOffset, yPos + photoHeight - cornerSize);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Retro photo number badge (top right of each photo)
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(stripX + stripWidth - borderWidth - 50 * scale, yPos + 10 * scale, 40 * scale, 30 * scale);
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 3 * scale;
+        ctx.strokeRect(stripX + stripWidth - borderWidth - 50 * scale, yPos + 10 * scale, 40 * scale, 30 * scale);
+        ctx.fillStyle = '#000000';
+        ctx.font = `bold ${20 * scale}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`#${index + 1}`, stripX + stripWidth - borderWidth - 30 * scale, yPos + 25 * scale);
+        
+        // Retro stickers and text on each photo
+        const stickers = [
+          { text: 'INSTANT', x: stripX + borderWidth + 15 * scale, y: yPos + photoHeight - 50 * scale, color: '#ffff00', rotate: -8 },
+          { text: 'VINTAGE', x: stripX + stripWidth - borderWidth - 100 * scale, y: yPos + photoHeight - 80 * scale, color: '#ff6b6b', rotate: 5 },
+          { text: 'RETRO', x: stripX + borderWidth + 20 * scale, y: yPos + 40 * scale, color: '#4ecdc4', rotate: -5 },
+          { text: 'CLASSIC', x: stripX + stripWidth - borderWidth - 90 * scale, y: yPos + 50 * scale, color: '#ffe66d', rotate: 8 },
+          { text: 'MEMORY', x: stripX + borderWidth + 15 * scale, y: yPos + photoHeight - 100 * scale, color: '#95e1d3', rotate: -3 },
+          { text: 'KEEP', x: stripX + stripWidth - borderWidth - 70 * scale, y: yPos + photoHeight - 30 * scale, color: '#f38181', rotate: 6 }
+        ];
+        
+        // Draw stickers (rotate through available stickers based on index)
+        const stickerIndex = index % stickers.length;
+        const sticker = stickers[stickerIndex];
+        
+        // Save context for rotation
+        ctx.save();
+        
+        // Draw sticker background (rounded rectangle)
+        const stickerWidth = (sticker.text.length * 12 + 20) * scale;
+        const stickerHeight = 35 * scale;
+        const stickerX = sticker.x;
+        const stickerY = sticker.y;
+        
+        // Rotate context
+        ctx.translate(stickerX + stickerWidth / 2, stickerY + stickerHeight / 2);
+        ctx.rotate(sticker.rotate * Math.PI / 180);
+        
+        // Draw sticker background (rounded rectangle manually)
+        const radius = 8 * scale;
+        const x = -stickerWidth / 2;
+        const y = -stickerHeight / 2;
+        const w = stickerWidth;
+        const h = stickerHeight;
+        
+        ctx.fillStyle = sticker.color;
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.lineTo(x + w - radius, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+        ctx.lineTo(x + w, y + h - radius);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+        ctx.lineTo(x + radius, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+        ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Draw sticker border
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 3 * scale;
+        ctx.stroke();
+        
+        // Draw sticker text
+        ctx.fillStyle = '#000000';
+        ctx.font = `bold ${18 * scale}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(sticker.text, 0, 0);
+        
+        // Restore context
+        ctx.restore();
+        
+        // Additional retro text decorations (only on photos, not overlapping with footer)
+        if (index < layout - 1) {
+          const retroTexts = [
+            { text: 'INSTANT PHOTOS', x: stripX + borderWidth + drawWidth / 2, y: yPos + 30 * scale }
+          ];
+          
+          // Draw retro text (one per photo, rotating)
+          const textIndex = index % retroTexts.length;
+          const retroText = retroTexts[textIndex];
+          
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#000000';
+          ctx.lineWidth = 4 * scale;
+          ctx.font = `bold ${16 * scale}px Arial`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          
+          // Draw text with outline effect
+          ctx.strokeText(retroText.text, retroText.x, retroText.y);
+          ctx.fillText(retroText.text, retroText.x, retroText.y);
+        }
+        
+        // Retro decorative dots pattern (top border)
+        ctx.fillStyle = '#000000';
+        for (let i = 0; i < 8; i++) {
+          const dotX = stripX + borderWidth + 20 * scale + (i * 90 * scale);
+          const dotY = yPos - 15 * scale;
+          ctx.beginPath();
+          ctx.arc(dotX, dotY, 4 * scale, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        
+        // Retro decorative lines (sides)
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2 * scale;
+        // Left side lines
+        for (let i = 0; i < 5; i++) {
+          const lineY = yPos + 50 * scale + (i * 100 * scale);
+          ctx.beginPath();
+          ctx.moveTo(stripX + borderWidth - 12 * scale, lineY);
+          ctx.lineTo(stripX + borderWidth - 5 * scale, lineY);
+          ctx.stroke();
+        }
+        // Right side lines
+        for (let i = 0; i < 5; i++) {
+          const lineY = yPos + 50 * scale + (i * 100 * scale);
+          ctx.beginPath();
+          ctx.moveTo(stripX + stripWidth - borderWidth + 5 * scale, lineY);
+          ctx.lineTo(stripX + stripWidth - borderWidth + 12 * scale, lineY);
+          ctx.stroke();
+        }
+      };
+      
+      const drawFrame = () => {
+        const elapsed = Date.now() - startTime;
+        if (elapsed >= totalVideoDuration) {
+          // Stop all videos
+          videoElements.forEach(({ video }) => {
+            video.pause();
+            URL.revokeObjectURL(video.src);
+          });
+          
+          // Stop recording
+          mediaRecorder.stop();
+          canvasStream.getTracks().forEach(track => track.stop());
+          setGifProgress(100);
+          return;
+        }
+        
+        // Calculate which loop we're in (0, 1, or 2) and time within current loop
+        const loopIndex = Math.floor(elapsed / (secondsPerPhoto * 1000));
+        const timeInCurrentLoop = elapsed % (secondsPerPhoto * 1000);
+        const videoTimeInSeconds = timeInCurrentLoop / 1000; // Time in current 3-second loop
+        
+        // Clear canvas - black background for vertical video
+        videoCtx.fillStyle = '#000000';
+        videoCtx.fillRect(0, 0, videoWidth, videoHeight);
+        
+        // Draw white background for photo strip
+        videoCtx.fillStyle = '#ffffff';
+        videoCtx.fillRect(stripX, stripY, stripWidth, totalHeight);
+        
+        // Draw header (EXACTLY same as photo strip, scaled)
+        const textY = headerY + 40 * scale;
+        videoCtx.fillStyle = '#000000';
+        videoCtx.font = `bold ${28 * scale}px Arial`;
+        videoCtx.textAlign = 'center';
+        videoCtx.textBaseline = 'middle';
+        videoCtx.strokeStyle = '#ffffff';
+        videoCtx.lineWidth = 2 * scale;
+        videoCtx.strokeText('PHOTO BOOTH', stripX + stripWidth / 2, textY);
+        videoCtx.fillText('PHOTO BOOTH', stripX + stripWidth / 2, textY);
+        
+        // Retro sticker on header - "INSTANT" (below line)
+        videoCtx.save();
+        videoCtx.translate(stripX + 120 * scale, headerY + 30 * scale);
+        videoCtx.rotate(-12 * Math.PI / 180);
+        videoCtx.fillStyle = '#ffff00';
+        const instantWidth = 80 * scale;
+        const instantHeight = 30 * scale;
+        videoCtx.beginPath();
+        videoCtx.moveTo(0, instantHeight / 2);
+        videoCtx.lineTo(instantWidth, instantHeight / 2);
+        videoCtx.lineTo(instantWidth - 10 * scale, -instantHeight / 2);
+        videoCtx.lineTo(10 * scale, -instantHeight / 2);
+        videoCtx.closePath();
+        videoCtx.fill();
+        videoCtx.strokeStyle = '#000000';
+        videoCtx.lineWidth = 2 * scale;
+        videoCtx.stroke();
+        videoCtx.fillStyle = '#000000';
+        videoCtx.font = `bold ${16 * scale}px Arial`;
+        videoCtx.textAlign = 'center';
+        videoCtx.textBaseline = 'middle';
+        videoCtx.fillText('INSTANT', instantWidth / 2, 0);
+        videoCtx.restore();
+        
+        // Retro sticker on header - "VINTAGE" (below line)
+        videoCtx.save();
+        videoCtx.translate(stripX + stripWidth - 120 * scale, headerY + 30 * scale);
+        videoCtx.rotate(12 * Math.PI / 180);
+        videoCtx.fillStyle = '#ff6b6b';
+        const vintageWidth = 90 * scale;
+        const vintageHeight = 30 * scale;
+        videoCtx.beginPath();
+        videoCtx.moveTo(0, vintageHeight / 2);
+        videoCtx.lineTo(vintageWidth, vintageHeight / 2);
+        videoCtx.lineTo(vintageWidth - 10 * scale, -vintageHeight / 2);
+        videoCtx.lineTo(10 * scale, -vintageHeight / 2);
+        videoCtx.closePath();
+        videoCtx.fill();
+        videoCtx.strokeStyle = '#000000';
+        videoCtx.lineWidth = 2 * scale;
+        videoCtx.stroke();
+        videoCtx.fillStyle = '#000000';
+        videoCtx.font = `bold ${16 * scale}px Arial`;
+        videoCtx.textAlign = 'center';
+        videoCtx.textBaseline = 'middle';
+        videoCtx.fillText('VINTAGE', vintageWidth / 2, 0);
+        videoCtx.restore();
+        
+        // Decorative lines under header
+        videoCtx.strokeStyle = '#000000';
+        videoCtx.lineWidth = 3 * scale;
+        videoCtx.beginPath();
+        videoCtx.moveTo(stripX + stripWidth / 2 - 100 * scale, headerY + 50 * scale);
+        videoCtx.lineTo(stripX + stripWidth / 2 + 100 * scale, headerY + 50 * scale);
+        videoCtx.stroke();
+        
+        // Retro decorative corner elements
+        const cornerRadius = 12 * scale;
+        const cornerDistance = 20 * scale;
+        
+        // Top-left corner
+        videoCtx.fillStyle = '#000000';
+        videoCtx.beginPath();
+        videoCtx.arc(stripX + cornerDistance, stripY + cornerDistance, cornerRadius, 0, Math.PI * 2);
+        videoCtx.fill();
+        videoCtx.beginPath();
+        videoCtx.moveTo(stripX + cornerDistance - cornerRadius, stripY + cornerDistance);
+        videoCtx.lineTo(stripX + cornerDistance - cornerRadius - 8 * scale, stripY + cornerDistance);
+        videoCtx.lineTo(stripX + cornerDistance, stripY + cornerDistance - cornerRadius - 8 * scale);
+        videoCtx.lineTo(stripX + cornerDistance, stripY + cornerDistance - cornerRadius);
+        videoCtx.closePath();
+        videoCtx.fill();
+        
+        // Top-right corner
+        videoCtx.beginPath();
+        videoCtx.arc(stripX + stripWidth - cornerDistance, stripY + cornerDistance, cornerRadius, 0, Math.PI * 2);
+        videoCtx.fill();
+        videoCtx.beginPath();
+        videoCtx.moveTo(stripX + stripWidth - cornerDistance + cornerRadius, stripY + cornerDistance);
+        videoCtx.lineTo(stripX + stripWidth - cornerDistance + cornerRadius + 8 * scale, stripY + cornerDistance);
+        videoCtx.lineTo(stripX + stripWidth - cornerDistance, stripY + cornerDistance - cornerRadius - 8 * scale);
+        videoCtx.lineTo(stripX + stripWidth - cornerDistance, stripY + cornerDistance - cornerRadius);
+        videoCtx.closePath();
+        videoCtx.fill();
+        
+        // Bottom-left corner
+        videoCtx.beginPath();
+        videoCtx.arc(stripX + cornerDistance, stripY + totalHeight - cornerDistance, cornerRadius, 0, Math.PI * 2);
+        videoCtx.fill();
+        videoCtx.beginPath();
+        videoCtx.moveTo(stripX + cornerDistance - cornerRadius, stripY + totalHeight - cornerDistance);
+        videoCtx.lineTo(stripX + cornerDistance - cornerRadius - 8 * scale, stripY + totalHeight - cornerDistance);
+        videoCtx.lineTo(stripX + cornerDistance, stripY + totalHeight - cornerDistance + cornerRadius + 8 * scale);
+        videoCtx.lineTo(stripX + cornerDistance, stripY + totalHeight - cornerDistance + cornerRadius);
+        videoCtx.closePath();
+        videoCtx.fill();
+        
+        // Bottom-right corner
+        videoCtx.beginPath();
+        videoCtx.arc(stripX + stripWidth - cornerDistance, stripY + totalHeight - cornerDistance, cornerRadius, 0, Math.PI * 2);
+        videoCtx.fill();
+        videoCtx.beginPath();
+        videoCtx.moveTo(stripX + stripWidth - cornerDistance + cornerRadius, stripY + totalHeight - cornerDistance);
+        videoCtx.lineTo(stripX + stripWidth - cornerDistance + cornerRadius + 8 * scale, stripY + totalHeight - cornerDistance);
+        videoCtx.lineTo(stripX + stripWidth - cornerDistance, stripY + totalHeight - cornerDistance + cornerRadius + 8 * scale);
+        videoCtx.lineTo(stripX + stripWidth - cornerDistance, stripY + totalHeight - cornerDistance + cornerRadius);
+        videoCtx.closePath();
+        videoCtx.fill();
+        
+        // Draw all video frames simultaneously (each looping 3x: 3s video + 2s hold)
+        videoElements.forEach(({ video, index }) => {
+          const yPos = photoStartY + (index * (photoHeight + innerBorder));
+          
+          // Calculate which loop we're in and time within current loop cycle
+          const loopCycleDuration = secondsPerPhoto + holdDuration; // 5 seconds per cycle
+          const timeInCycle = elapsed % (loopCycleDuration * 1000);
+          const timeInCycleSeconds = timeInCycle / 1000;
+          const currentLoop = Math.floor(elapsed / (loopCycleDuration * 1000));
+          
+          const maxVideoTime = Math.min(video.duration || 3, secondsPerPhoto);
+          let currentFrameTime = 0;
+          let isHolding = false;
+          
+          if (timeInCycleSeconds < secondsPerPhoto) {
+            // Playing video (0-3 seconds)
+            currentFrameTime = Math.min(timeInCycleSeconds, maxVideoTime - 0.01);
+            isHolding = false;
+            
+            if (video.readyState >= 2) {
+              // Always update video time to ensure it's playing correctly
+              // Use smaller threshold to update more frequently
+              if (Math.abs(video.currentTime - currentFrameTime) > 0.05) {
+                video.currentTime = currentFrameTime;
+              }
+              
+              // Ensure video is playing and not paused
+              if (video.paused) {
+                const playPromise = video.play();
+                if (playPromise !== undefined) {
+                  playPromise.catch(e => console.log('Video play error:', e));
+                }
+              }
+            } else if (video.readyState >= 1) {
+              // If video is still loading, try to load the frame anyway
+              // This helps prevent freeze during loading
+              try {
+                video.currentTime = currentFrameTime;
+              } catch (e) {
+                // Ignore errors during loading
+              }
+            }
+          } else {
+            // Holding last frame (3-5 seconds)
+            isHolding = true;
+            currentFrameTime = Math.max(0, maxVideoTime - 0.01); // Last frame of video
+            
+            if (video.readyState >= 2) {
+              // Keep video at last frame - update more aggressively
+              if (Math.abs(video.currentTime - currentFrameTime) > 0.05) {
+                video.currentTime = currentFrameTime;
+              }
+              
+              // Pause video during hold to save resources
+              if (!video.paused) {
+                video.pause();
+              }
+            }
+          }
+          
+          // Calculate fade transition for crossfade at end of hold period
+          const fadeDuration = 0.4; // Fade duration
+          let currentOpacity = 1;
+          let loopStartOpacity = 0;
+          let showLoopStart = false;
+          
+          // Crossfade happens at the end of hold period (before next loop starts)
+          if (timeInCycleSeconds >= loopCycleDuration - fadeDuration && currentLoop < loopCount - 1) {
+            // At end of hold: current frame (last frame) fades out, next frame (start of loop) fades in
+            const fadeProgress = (loopCycleDuration - timeInCycleSeconds) / fadeDuration;
+            currentOpacity = fadeProgress;
+            loopStartOpacity = 1 - fadeProgress;
+            showLoopStart = true;
+          } else if (timeInCycleSeconds < fadeDuration && currentLoop > 0) {
+            // At start of new loop: current frame (start) fades in, previous frame (last frame) fades out
+            currentOpacity = timeInCycleSeconds / fadeDuration;
+            loopStartOpacity = 1 - currentOpacity;
+            showLoopStart = true;
+          }
+          
+          // Calculate crop
+          const videoAspect = video.videoWidth / video.videoHeight;
+          let sourceWidth, sourceHeight, sourceX, sourceY;
+          
+          if (videoAspect > targetAspect) {
+            sourceHeight = video.videoHeight;
+            sourceWidth = sourceHeight * targetAspect;
+            sourceX = (video.videoWidth - sourceWidth) / 2;
+            sourceY = 0;
+          } else {
+            sourceWidth = video.videoWidth;
+            sourceHeight = sourceWidth / targetAspect;
+            sourceX = 0;
+            sourceY = (video.videoHeight - sourceHeight) / 2;
+          }
+          
+          // Create temporary canvas for smooth crossfade blending
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = drawWidth;
+          tempCanvas.height = photoHeight;
+          const tempCtx = tempCanvas.getContext('2d');
+          
+          // Fill with white background first (same as photo strip background)
+          tempCtx.fillStyle = '#ffffff';
+          tempCtx.fillRect(0, 0, drawWidth, photoHeight);
+          
+          // Draw loop start frame first (if crossfading)
+          if (showLoopStart && loopStartOpacity > 0.01) {
+            // For crossfade, we need to draw frame at start (0s) without changing main video time
+            // Use a separate seek just for drawing
+            const savedTime = video.currentTime;
+            const savedPaused = video.paused;
+            
+            // Temporarily seek to start for drawing
+            video.currentTime = 0;
+            // Wait a tiny bit for video to update (but don't block)
+            // Force a seek by setting it again
+            if (video.readyState >= 2) {
+              // Draw immediately - video should have the frame
+              tempCtx.save();
+              tempCtx.globalAlpha = loopStartOpacity;
+              tempCtx.drawImage(
+                video,
+                sourceX, sourceY, sourceWidth, sourceHeight,
+                0, 0, drawWidth, photoHeight
+              );
+              tempCtx.globalAlpha = 1;
+              tempCtx.restore();
+            }
+            
+            // Restore video time and play state immediately
+            video.currentTime = savedTime;
+            if (!savedPaused && video.paused) {
+              video.play().catch(() => {});
+            }
+          }
+          
+          // Draw current frame on top with opacity (blend mode for smooth crossfade)
+          if (currentOpacity > 0.01) {
+            // Ensure video is at correct time before drawing
+            const clampedCurrentTime = Math.max(0, Math.min(maxVideoTime - 0.01, currentFrameTime));
+            if (video.readyState >= 2 && Math.abs(video.currentTime - clampedCurrentTime) > 0.05) {
+              video.currentTime = clampedCurrentTime;
+            }
+            
+            // Draw current frame to temp canvas with opacity
+            tempCtx.save();
+            tempCtx.globalCompositeOperation = 'source-over';
+            tempCtx.globalAlpha = currentOpacity;
+            tempCtx.drawImage(
+              video,
+              sourceX, sourceY, sourceWidth, sourceHeight,
+              0, 0, drawWidth, photoHeight
+            );
+            tempCtx.globalAlpha = 1;
+            tempCtx.globalCompositeOperation = 'source-over';
+            tempCtx.restore();
+          }
+          
+          // Draw the blended result to main canvas
+          videoCtx.drawImage(tempCanvas, stripX + borderWidth, yPos);
+          
+          // Apply filter to the combined result
+          const imageData = videoCtx.getImageData(stripX + borderWidth, yPos, drawWidth, photoHeight);
+          const filteredData = applyPixelatedFilter(videoCtx, imageData, filter);
+          videoCtx.putImageData(filteredData, stripX + borderWidth, yPos);
+          
+          // Draw all decorations (same as photo strip) - no fade on decorations
+          drawAllDecorations(videoCtx, yPos, index, true);
+        });
+        
+        // Draw footer (EXACTLY same as photo strip, scaled)
+        const footerY = stripY + totalHeight - 20 * scale;
+        
+        // Custom moment text (above line)
+        if (customMoment && customMoment.trim()) {
+          videoCtx.fillStyle = '#000000';
+          videoCtx.font = `bold ${24 * scale}px Arial`;
+          videoCtx.textAlign = 'center';
+          videoCtx.textBaseline = 'bottom';
+          videoCtx.strokeStyle = '#ffffff';
+          videoCtx.lineWidth = 2 * scale;
+          const momentY = footerY - 38 * scale;
+          videoCtx.strokeText(customMoment.toUpperCase(), stripX + stripWidth / 2, momentY);
+          videoCtx.fillText(customMoment.toUpperCase(), stripX + stripWidth / 2, momentY);
+        }
+        
+        // Decorative line above date
+        videoCtx.strokeStyle = '#000000';
+        videoCtx.lineWidth = 3 * scale;
+        const lineY = customMoment && customMoment.trim() ? footerY - 28 * scale : footerY - 25 * scale;
+        videoCtx.beginPath();
+        videoCtx.moveTo(stripX + stripWidth / 2 - 100 * scale, lineY);
+        videoCtx.lineTo(stripX + stripWidth / 2 + 100 * scale, lineY);
+        videoCtx.stroke();
+        
+        // Date stamp style text (at the very bottom)
+        const now = new Date();
+        const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        videoCtx.fillStyle = '#000000';
+        videoCtx.font = `bold ${18 * scale}px Arial`;
+        videoCtx.textAlign = 'center';
+        videoCtx.textBaseline = 'bottom';
+        videoCtx.strokeStyle = '#ffffff';
+        videoCtx.lineWidth = 2 * scale;
+        videoCtx.strokeText(dateStr.toUpperCase(), stripX + stripWidth / 2, footerY);
+        videoCtx.fillText(dateStr.toUpperCase(), stripX + stripWidth / 2, footerY);
+        
+        // Retro sticker on footer left - "RETRO"
+        videoCtx.save();
+        videoCtx.translate(stripX + 100 * scale, footerY - 50 * scale);
+        videoCtx.rotate(-8 * Math.PI / 180);
+        videoCtx.fillStyle = '#4ecdc4';
+        const retroWidth = 70 * scale;
+        const retroHeight = 25 * scale;
+        videoCtx.beginPath();
+        videoCtx.moveTo(0, retroHeight / 2);
+        videoCtx.lineTo(retroWidth, retroHeight / 2);
+        videoCtx.lineTo(retroWidth - 8 * scale, -retroHeight / 2);
+        videoCtx.lineTo(8 * scale, -retroHeight / 2);
+        videoCtx.closePath();
+        videoCtx.fill();
+        videoCtx.strokeStyle = '#000000';
+        videoCtx.lineWidth = 2 * scale;
+        videoCtx.stroke();
+        videoCtx.fillStyle = '#000000';
+        videoCtx.font = `bold ${16 * scale}px Arial`;
+        videoCtx.textAlign = 'center';
+        videoCtx.textBaseline = 'middle';
+        videoCtx.fillText('RETRO', retroWidth / 2, 0);
+        videoCtx.restore();
+        
+        // Retro sticker on footer right - "CLASSIC"
+        videoCtx.save();
+        videoCtx.translate(stripX + stripWidth - 100 * scale, footerY - 50 * scale);
+        videoCtx.rotate(8 * Math.PI / 180);
+        videoCtx.fillStyle = '#95e1d3';
+        const classicWidth = 80 * scale;
+        const classicHeight = 25 * scale;
+        videoCtx.beginPath();
+        videoCtx.moveTo(0, classicHeight / 2);
+        videoCtx.lineTo(classicWidth, classicHeight / 2);
+        videoCtx.lineTo(classicWidth - 8 * scale, -classicHeight / 2);
+        videoCtx.lineTo(8 * scale, -classicHeight / 2);
+        videoCtx.closePath();
+        videoCtx.fill();
+        videoCtx.strokeStyle = '#000000';
+        videoCtx.lineWidth = 2 * scale;
+        videoCtx.stroke();
+        videoCtx.fillStyle = '#000000';
+        videoCtx.font = `bold ${16 * scale}px Arial`;
+        videoCtx.textAlign = 'center';
+        videoCtx.textBaseline = 'middle';
+        videoCtx.fillText('CLASSIC', classicWidth / 2, 0);
+        videoCtx.restore();
+        
+        // Retro pattern dots on sides
+        videoCtx.fillStyle = '#000000';
+        for (let i = 0; i < 10; i++) {
+          const dotY = stripY + 60 * scale + (i * 50 * scale);
+          if (dotY < stripY + totalHeight - 60 * scale) {
+            // Left side dots
+            videoCtx.beginPath();
+            videoCtx.arc(stripX + 15 * scale, dotY, 3 * scale, 0, Math.PI * 2);
+            videoCtx.fill();
+            // Right side dots
+            videoCtx.beginPath();
+            videoCtx.arc(stripX + stripWidth - 15 * scale, dotY, 3 * scale, 0, Math.PI * 2);
+            videoCtx.fill();
+          }
+        }
+        
+        // Outer thick border with retro style
+        videoCtx.strokeStyle = '#000000';
+        videoCtx.lineWidth = 12 * scale;
+        videoCtx.strokeRect(stripX + 6 * scale, stripY + 6 * scale, stripWidth - 12 * scale, totalHeight - 12 * scale);
+        
+        // Inner decorative border
+        videoCtx.strokeStyle = '#000000';
+        videoCtx.lineWidth = 4 * scale;
+        videoCtx.strokeRect(stripX + 18 * scale, stripY + 18 * scale, stripWidth - 36 * scale, totalHeight - 36 * scale);
+        
+        // Update progress
+        const progress = 50 + (elapsed / totalVideoDuration) * 45;
+        setGifProgress(Math.round(progress));
+        
+        requestAnimationFrame(drawFrame);
+      };
+      
+      // Start drawing
+      drawFrame();
+      
+    } catch (error) {
+      console.error('Error creating Live Photo video:', error);
+      alert('Error saat membuat Live Photo video: ' + error.message);
+      setIsCreatingGIF(false);
+      setGifProgress(0);
+    }
+  };
+
+  const resetAll = () => {
+    setPhotos([]);
+    setCurrentPhotoIndex(0);
+    setPage('landing');
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+  };
+
+  const getFilterPreview = () => {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+    
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const filteredData = applyPixelatedFilter(ctx, imageData, filter);
+    ctx.putImageData(filteredData, 0, 0);
+    
+    return canvas.toDataURL('image/png');
+  };
+
+  // Landing Page
+  if (page === 'landing') {
+  return (
+      <div className="min-h-screen bg-white flex items-center justify-center p-4 relative overflow-hidden">
+        {/* Pixelated background pattern */}
+        <div className="absolute inset-0 opacity-5" style={{
+          backgroundImage: `repeating-linear-gradient(0deg, #000 0px, #000 2px, transparent 2px, transparent 6px),
+                           repeating-linear-gradient(90deg, #000 0px, #000 2px, transparent 2px, transparent 6px)`
+        }}></div>
+        
+        <div className="max-w-3xl w-full text-center relative z-10">
+          {/* Title with pixelated effect */}
+          <div className="relative mb-12">
+            <div className="absolute -inset-4 bg-black transform rotate-2"></div>
+            <div className="relative bg-white border-8 border-black p-6 transform -rotate-1">
+              <h1 className="text-5xl md:text-8xl font-black text-black mb-2 tracking-tight" style={{
+                textShadow: '4px 4px 0px rgba(0,0,0,0.2)'
+              }}>
+                PHOTO
+              </h1>
+              <h1 className="text-5xl md:text-8xl font-black text-black tracking-tight" style={{
+                textShadow: '4px 4px 0px rgba(0,0,0,0.2)'
+              }}>
+                STRIP
+              </h1>
+      </div>
+            <div className="absolute -bottom-6 -right-6 bg-black text-white px-4 py-2 font-black text-sm rotate-12 border-4 border-black">
+              RETRO!
+            </div>
+          </div>
+          
+          {/* Description box */}
+          <div className="bg-black text-white p-8 md:p-10 border-8 border-black shadow-2xl mb-10 relative">
+            <div className="absolute -top-3 -left-3 w-6 h-6 bg-white"></div>
+            <div className="absolute -top-3 -right-3 w-6 h-6 bg-white"></div>
+            <div className="absolute -bottom-3 -left-3 w-6 h-6 bg-white"></div>
+            <div className="absolute -bottom-3 -right-3 w-6 h-6 bg-white"></div>
+            
+            <div className="flex items-center justify-center gap-3 mb-4">
+              <Zap className="w-8 h-8" fill="white" />
+              <p className="text-2xl md:text-3xl font-black">
+                CLASSIC PIXELATED
+              </p>
+              <Zap className="w-8 h-8" fill="white" />
+      </div>
+            <p className="text-base md:text-lg font-bold">
+              Retro comic style meets modern photobox!
+            </p>
+          </div>
+
+          {/* Layout selection */}
+          <div className="mb-8">
+            <p className="text-xl font-black mb-4 tracking-wider">SELECT LAYOUT:</p>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+              <button
+                onClick={() => setLayout(3)}
+                className={`px-10 py-5 text-xl font-black border-6 border-black transition-all transform hover:scale-105 hover:-rotate-1 relative ${
+                  layout === 3 ? 'bg-black text-white' : 'bg-white text-black'
+                }`}
+                style={{ borderWidth: '6px' }}
+              >
+                <span className="relative z-10">3 FRAMES</span>
+                {layout === 3 && (
+                  <div className="absolute -top-2 -right-2 bg-white text-black px-2 py-1 text-xs font-black rotate-12">
+                    ★
+                  </div>
+                )}
+              </button>
+              <button
+                onClick={() => setLayout(4)}
+                className={`px-10 py-5 text-xl font-black border-6 border-black transition-all transform hover:scale-105 hover:rotate-1 relative ${
+                  layout === 4 ? 'bg-black text-white' : 'bg-white text-black'
+                }`}
+                style={{ borderWidth: '6px' }}
+              >
+                <span className="relative z-10">4 FRAMES</span>
+                {layout === 4 && (
+                  <div className="absolute -top-2 -right-2 bg-white text-black px-2 py-1 text-xs font-black rotate-12">
+                    ★
+                  </div>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Start button */}
+          <button
+            onClick={() => setPage('camera')}
+            className="w-full sm:w-auto px-16 py-8 bg-black text-white text-3xl md:text-4xl font-black border-8 border-black transform hover:scale-105 transition-all shadow-2xl hover:shadow-3xl flex items-center justify-center gap-4 mx-auto relative overflow-hidden group"
+          >
+            <div className="absolute inset-0 bg-white transform -translate-x-full group-hover:translate-x-0 transition-transform duration-300"></div>
+            <Camera className="w-10 h-10 relative z-10 group-hover:text-black transition-colors" />
+            <span className="relative z-10 group-hover:text-black transition-colors">START!</span>
+          </button>
+
+          {/* Filter preview */}
+          <div className="mt-12 grid grid-cols-2 lg:grid-cols-5 gap-4">
+            {[
+              { name: 'NORMAL', value: 'normal' },
+              { name: 'HALFTONE', value: 'halftone' },
+              { name: 'DITHERED', value: 'dithered' },
+              { name: 'PIXELATED', value: 'pixelated' },
+              { name: 'SEPIA', value: 'sepia' }
+            ].map((f) => (
+              <div key={f.value} className="border-4 border-black bg-white p-4 transform hover:-rotate-2 transition-transform">
+                  <div className="w-full h-20 bg-black mb-2 relative overflow-hidden">
+                  <div className="absolute inset-0" style={{
+                    background: f.value === 'normal' ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' :
+                               f.value === 'halftone' ? 'radial-gradient(circle, black 1px, white 1px)' :
+                               f.value === 'dithered' ? 'repeating-linear-gradient(45deg, black 0px, black 1px, white 1px, white 2px)' :
+                               f.value === 'pixelated' ? 'repeating-conic-gradient(black 0% 25%, white 25% 50%)' :
+                               f.value === 'sepia' ? 'linear-gradient(135deg, #8b6f47 0%, #d4a574 50%, #8b6f47 100%)' :
+                               'linear-gradient(to right, black 50%, white 50%)',
+                    backgroundSize: f.value === 'halftone' ? '6px 6px' :
+                                   f.value === 'pixelated' ? '8px 8px' : 'auto'
+                  }}></div>
+                </div>
+                <p className="font-black text-sm text-center">{f.name}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Camera Page
+  if (page === 'camera') {
+    return (
+      <div className="min-h-screen bg-black flex flex-col">
+        {/* Header */}
+        <div className="p-4 bg-white border-b-8 border-black">
+          <div className="max-w-6xl mx-auto flex justify-between items-center">
+            <button
+              onClick={resetAll}
+              className="flex items-center gap-2 px-6 py-3 bg-black text-white font-black hover:bg-gray-800 transition-colors border-4 border-black transform hover:-rotate-2"
+            >
+              <ArrowLeft className="w-5 h-5" />
+              BACK
+            </button>
+            <div className="text-2xl md:text-4xl font-black tracking-wider">
+              FRAME {currentPhotoIndex + 1}/{layout}
+            </div>
+          </div>
+        </div>
+
+        {/* Camera view */}
+        <div className="flex-1 flex items-center justify-center p-4 md:p-8">
+          <div className="relative max-w-4xl w-full">
+            {/* Main video frame */}
+            <div className="border-8 border-white shadow-2xl relative bg-black">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-auto bg-black"
+              />
+              
+              {/* Overlay grid for comic effect */}
+              <div className="absolute inset-0 pointer-events-none" style={{
+                backgroundImage: 'repeating-linear-gradient(0deg, transparent 0px, transparent 99px, rgba(255,255,255,0.1) 99px, rgba(255,255,255,0.1) 100px), repeating-linear-gradient(90deg, transparent 0px, transparent 99px, rgba(255,255,255,0.1) 99px, rgba(255,255,255,0.1) 100px)'
+              }}></div>
+              
+              {/* Countdown overlay - positioned at top center, semi-transparent */}
+              {isCountingDown && countdown > 0 && (
+                <div className="absolute top-8 left-0 right-0 flex justify-center z-10 pointer-events-none">
+                  <div className="bg-black bg-opacity-70 border-8 border-white px-12 py-8 transform -rotate-2">
+                    <div className="text-white text-8xl md:text-[150px] font-black animate-pulse text-center" style={{
+                      textShadow: '0 0 30px rgba(255,255,255,0.9), 0 0 60px rgba(255,255,255,0.6)',
+                      lineHeight: '1'
+                    }}>
+                      {countdown}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            {/* Progress indicators */}
+            <div className="absolute -top-6 left-0 right-0 flex justify-center gap-3">
+              {Array.from({ length: layout }).map((_, i) => (
+                <div
+                  key={i}
+                  className={`w-16 h-16 md:w-20 md:h-20 border-4 flex items-center justify-center font-black text-2xl transform transition-all ${
+                    i < currentPhotoIndex
+                      ? 'bg-white text-black border-white rotate-12 scale-90'
+                      : i === currentPhotoIndex
+                      ? 'bg-yellow-400 text-black border-black animate-pulse scale-110 rotate-0'
+                      : 'bg-black text-white border-white opacity-50 -rotate-6'
+                  }`}
+                >
+                  {i + 1}
+                </div>
+              ))}
+            </div>
+
+            {/* Comic burst decoration */}
+            <div className="absolute -bottom-8 -right-8 bg-yellow-400 border-4 border-black px-6 py-3 font-black text-lg transform rotate-12 hidden md:block">
+              SAY CHEESE!
+            </div>
+          </div>
+        </div>
+
+        {/* Capture button */}
+        <div className="p-6 md:p-8 bg-white border-t-8 border-black">
+          <div className="max-w-4xl mx-auto">
+            <button
+              onClick={startCountdown}
+              disabled={isCountingDown}
+              className={`w-full py-8 bg-black text-white text-3xl md:text-4xl font-black hover:bg-gray-800 transition-all flex items-center justify-center gap-4 border-8 border-black transform hover:scale-105 active:scale-95 relative overflow-hidden group ${
+                isCountingDown ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
+            >
+              <div className="absolute inset-0 bg-white transform translate-y-full group-hover:translate-y-0 transition-transform duration-200"></div>
+              <Camera className="w-12 h-12 relative z-10 group-hover:text-black transition-colors" />
+              <span className="relative z-10 group-hover:text-black transition-colors">SNAP!</span>
+        </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Preview Page
+  if (page === 'preview') {
+    return (
+      <div className="min-h-screen bg-gray-100 p-4 md:p-8">
+        <div className="max-w-7xl mx-auto">
+          <div className="bg-white p-6 md:p-10 border-8 border-black shadow-2xl">
+            {/* Header */}
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+              <div>
+                <h2 className="text-4xl md:text-6xl font-black mb-2">PREVIEW</h2>
+                <p className="text-lg font-bold opacity-70">Your pixelated masterpiece!</p>
+              </div>
+              <button
+                onClick={resetAll}
+                className="px-6 py-3 bg-black text-white font-black hover:bg-gray-800 transition-colors flex items-center gap-2 border-4 border-black transform hover:-rotate-2"
+              >
+                <ArrowLeft className="w-5 h-5" />
+                START OVER
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Preview Strip */}
+              <div className="lg:col-span-2">
+                <div className="bg-white border-8 border-black p-6 shadow-xl">
+                  <div className="space-y-4">
+                    {filteredPhotos.map((filteredSrc, index) => {
+                      if (!filteredSrc) return null; // Skip null photos
+                      return (
+                        <div key={index} className="relative group">
+                          <div className="border-6 border-black relative overflow-hidden bg-black" style={{ borderWidth: '6px' }}>
+                            <img
+                              src={filteredSrc}
+                              alt={`Photo ${index + 1}`}
+                              className="w-full h-auto"
+                            />
+                            <div className="absolute top-4 left-4 bg-white border-4 border-black px-3 py-1 font-black text-lg">
+                              #{index + 1}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => retakePhoto(index)}
+                            className="absolute top-4 right-4 p-3 bg-yellow-400 border-4 border-black opacity-0 group-hover:opacity-100 transition-all hover:scale-110 transform hover:rotate-12 font-black"
+                            title="Retake photo"
+                          >
+                            <RotateCcw className="w-6 h-6" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Controls */}
+              <div className="space-y-6">
+                {/* Filter Selection */}
+                <div className="bg-white border-6 border-black p-6 shadow-lg" style={{ borderWidth: '6px' }}>
+                  <div className="flex items-center gap-3 mb-6">
+                    <Filter className="w-8 h-8" />
+                    <h3 className="text-2xl font-black">FILTER</h3>
+                  </div>
+                  <div className="space-y-3">
+                    {[
+                      { name: 'NORMAL', value: 'normal' },
+                      { name: 'HALFTONE', value: 'halftone' },
+                      { name: 'DITHERED', value: 'dithered' },
+                      { name: 'PIXELATED', value: 'pixelated' },
+                      { name: 'SEPIA', value: 'sepia' }
+                    ].map((f) => (
+                      <button
+                        key={f.value}
+                        onClick={() => setFilter(f.value)}
+                        className={`w-full px-5 py-4 text-left font-black border-4 border-black transition-all transform hover:scale-105 hover:-rotate-1 relative ${
+                          filter === f.value
+                            ? 'bg-black text-white'
+                            : 'bg-white text-black hover:bg-gray-100'
+                        }`}
+                      >
+                        {f.name}
+                        {filter === f.value && (
+                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-2xl">★</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Layout Info */}
+                <div className="bg-black text-white border-6 border-black p-6" style={{ borderWidth: '6px' }}>
+                  <div className="flex items-center gap-3 mb-4">
+                    <Layout className="w-8 h-8" />
+                    <h3 className="text-2xl font-black">LAYOUT</h3>
+                  </div>
+                  <div className="text-center py-6 border-4 border-white">
+                    <p className="text-6xl font-black">{layout}</p>
+                    <p className="text-xl font-bold mt-2">FRAMES</p>
+                  </div>
+                </div>
+
+                {/* Custom Moment Text */}
+                <div className="bg-white border-6 border-black p-6 shadow-lg" style={{ borderWidth: '6px' }}>
+                  <div className="mb-4">
+                    <label className="block text-xl font-black mb-3">MOMENT</label>
+                    <input
+                      type="text"
+                      value={customMoment}
+                      onChange={(e) => setCustomMoment(e.target.value)}
+                      placeholder="e.g., Birthday Party, Graduation..."
+                      maxLength={40}
+                      className="w-full px-4 py-3 border-4 border-black font-bold text-lg focus:outline-none focus:ring-4 focus:ring-yellow-400"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">Tulis momen spesial ini</p>
+                  </div>
+                </div>
+
+                {/* Download Buttons */}
+                <div className="space-y-4">
+                  {/* Download Photo Strip */}
+                  <button
+                    onClick={downloadStrip}
+                    className="w-full py-8 bg-yellow-400 text-black text-2xl font-black hover:bg-yellow-300 transition-all flex items-center justify-center gap-4 border-6 border-black transform hover:scale-105 hover:rotate-1 shadow-xl relative overflow-hidden group"
+                    style={{ borderWidth: '6px' }}
+                  >
+                    <div className="absolute inset-0 bg-black transform -translate-x-full group-hover:translate-x-0 transition-transform duration-300"></div>
+                    <Download className="w-8 h-8 relative z-10 group-hover:text-white transition-colors" />
+                    <span className="relative z-10 group-hover:text-white transition-colors">DOWNLOAD STRIP!</span>
+                  </button>
+                  
+                  {/* Download Live Photo GIF */}
+                  <button
+                    onClick={downloadGIF}
+                    disabled={isCreatingGIF}
+                    className={`w-full py-8 text-white text-2xl font-black transition-all flex items-center justify-center gap-4 border-6 border-black transform shadow-xl relative overflow-hidden group ${
+                      isCreatingGIF 
+                        ? 'bg-gray-400 cursor-not-allowed' 
+                        : 'bg-purple-500 hover:bg-purple-600 hover:scale-105 hover:-rotate-1'
+                    }`}
+                    style={{ borderWidth: '6px' }}
+                  >
+                    {!isCreatingGIF && (
+                      <div className="absolute inset-0 bg-white transform translate-x-full group-hover:translate-x-0 transition-transform duration-300"></div>
+                    )}
+                    {isCreatingGIF ? (
+                      <>
+                        <div className="animate-spin rounded-full h-8 w-8 border-4 border-white border-t-transparent"></div>
+                        <span className="relative z-10">
+                          CREATING GIF... {gifProgress}%
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Video className="w-8 h-8 relative z-10 group-hover:text-black transition-colors" />
+                        <span className="relative z-10 group-hover:text-black transition-colors">DOWNLOAD LIVE PHOTO!</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <canvas ref={canvasRef} style={{ display: 'none' }} />
+        <a ref={downloadRef} style={{ display: 'none' }}>Download</a>
+      </div>
+    );
+  }
+};
+
+export default ComicPhotobox;
