@@ -60,21 +60,24 @@ export const useVideoRecording = () => {
 
       videoRecordingStartTime.current = Date.now();
 
-      const options = {
-        mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: 8000000 // 8 Mbps - lebih tinggi untuk kualitas dan frame rate yang lebih baik
-      };
+      // Prioritize VP8 for better compatibility and stability
+      // VP9 sometimes causes demuxer errors in some browsers when recorded with MediaRecorder
+      const mimeTypes = [
+        'video/webm;codecs=vp8',
+        'video/webm;codecs=vp9',
+        'video/webm'
+      ];
 
-      // Fallback to other codecs if vp9 not supported
-      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
-          options.mimeType = 'video/webm;codecs=vp8';
-        } else if (MediaRecorder.isTypeSupported('video/webm')) {
-          options.mimeType = 'video/webm';
-        } else {
-          console.warn('No supported video codec found');
-          return;
+      for (const type of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          options.mimeType = type;
+          break;
         }
+      }
+
+      if (!options.mimeType) {
+        console.warn('No supported video codec found');
+        return;
       }
 
       const mediaRecorder = new MediaRecorder(mediaStream, options);
@@ -95,11 +98,10 @@ export const useVideoRecording = () => {
         console.error('MediaRecorder error:', event.error);
       };
 
-      // Gunakan timeslice yang lebih kecil untuk chunk yang lebih sering dan smooth
-      // Timeslice 50ms memberikan chunk yang lebih halus dan mengurangi patah-patah
-      // Frame rate ditentukan oleh MediaStream (30fps dari kamera)
-      mediaRecorder.start(50); // Collect data every 50ms untuk video yang lebih smooth
-      console.log('Video recording started for live photo');
+      // Increase timeslice to 200ms to ensure better chunk integrity and avoid header issues
+      // 50ms is too small and can cause "DEMUXER_ERROR_COULD_NOT_OPEN"
+      mediaRecorder.start(200);
+      console.log(`Video recording started with ${options.mimeType}`);
     } catch (error) {
       console.error('Error starting video recording:', error);
     }
@@ -114,7 +116,7 @@ export const useVideoRecording = () => {
   const getVideoClip = () => {
     return new Promise((resolve) => {
       let promiseResolved = false;
-      
+
       const safeResolve = (value) => {
         if (!promiseResolved) {
           promiseResolved = true;
@@ -132,12 +134,12 @@ export const useVideoRecording = () => {
       }
 
       const currentState = mediaRecorderRef.current.state;
-      
+
       // If already inactive, get chunks that were recorded
       if (currentState === 'inactive') {
         const chunks = [...recordedChunksRef.current];
         console.log('MediaRecorder inactive, chunks available:', chunks.length);
-        
+
         if (chunks.length > 0) {
           // Pastikan minimal ada beberapa chunk untuk video yang valid
           if (chunks.length < 2) {
@@ -181,7 +183,7 @@ export const useVideoRecording = () => {
           console.log('handleStop: ignoring event from different recorder');
           return;
         }
-        
+
         if (handleStopCalled || promiseResolved) {
           // Already processed or resolved, ignore duplicate calls
           console.log('handleStop: already processed or resolved, ignoring. handleStopCalled:', handleStopCalled, 'promiseResolved:', promiseResolved);

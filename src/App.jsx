@@ -38,7 +38,7 @@ const ComicPhotobox = () => {
   // Initialize camera when on camera page
   useEffect(() => {
     if (page === 'camera' && videoRef.current && !stream) {
-      console.log('Photobox Version: 0.0.1');
+      console.log('Photobox Version: 0.0.2');
       startCamera().then((mediaStream) => {
         if (mediaStream) {
           // DON'T start recording here - wait until countdown starts
