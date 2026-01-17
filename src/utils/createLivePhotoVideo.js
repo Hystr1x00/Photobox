@@ -22,7 +22,7 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
   if (availableClips.length === 0) {
     throw new Error('Tidak ada video untuk dibuat Live Photo! Pastikan video sudah direkam saat mengambil foto.');
   }
-  
+
   console.log(`Creating live photo with ${availableClips.length} video clips`);
 
   // Video settings - 1080x1920 vertical video with black background
@@ -131,14 +131,14 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
         // Create a new blob URL to ensure it's fresh
         // Sometimes blob URLs can become invalid, so we create a new one
         const objectURL = URL.createObjectURL(clip);
-        
+
         // Validate blob before creating video element
         // Read first few bytes to check if blob is valid
         const reader = new FileReader();
         reader.onloadend = () => {
           const arrayBuffer = reader.result;
           const uint8Array = new Uint8Array(arrayBuffer);
-          
+
           // Check for WebM header (EBML header starts with 0x1A 0x45 0xDF 0xA3)
           // Or at least check if it's not all zeros
           let hasValidData = false;
@@ -148,13 +148,13 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
               break;
             }
           }
-          
+
           if (!hasValidData) {
             URL.revokeObjectURL(objectURL);
             reject(new Error(`Video ${index} appears to be empty or invalid (all zeros)`));
             return;
           }
-          
+
           // Now create video element
           const videoElement = document.createElement('video');
           videoElement.src = objectURL;
@@ -197,10 +197,10 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
             cleanup();
             URL.revokeObjectURL(objectURL);
             const error = videoElement.error;
-            const errorMessage = error 
+            const errorMessage = error
               ? `Code: ${error.code}, Message: ${error.message || 'Unknown error'}`
               : 'Unknown error';
-            
+
             // Log detailed error for debugging
             console.error(`Video ${index} load error:`, {
               code: error?.code,
@@ -208,19 +208,19 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
               blobSize: clip.size,
               blobType: clip.type
             });
-            
+
             reject(new Error(`Video ${index} failed to load: ${errorMessage}`));
           };
 
           // Try to load
           videoElement.load();
         };
-        
+
         reader.onerror = () => {
           URL.revokeObjectURL(objectURL);
           reject(new Error(`Video ${index} failed to read blob data`));
         };
-        
+
         // Read first 1KB to validate
         reader.readAsArrayBuffer(clip.slice(0, 1024));
       }).catch((error) => {
@@ -234,7 +234,7 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
       // Extract valid video elements, skip failed ones
       // Keep original index mapping for correct positioning
       const validVideoElements = [];
-      
+
       results.forEach((result, originalIndex) => {
         if (result.status === 'fulfilled' && result.value !== null && result.value !== undefined) {
           // Ensure video property exists and is valid
@@ -253,13 +253,13 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
           }
         }
       });
-      
+
       console.log(`Loaded ${validVideoElements.length} out of ${videoClips.length} video elements`);
-      
+
       if (validVideoElements.length === 0) {
         throw new Error('Tidak ada video yang valid untuk dibuat Live Photo! Pastikan video sudah direkam dengan benar.');
       }
-      
+
       onProgress(30);
 
       // Video timing settings
@@ -296,11 +296,11 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
       let animationFrameId = null;
       const drawFrame = () => {
         const elapsed = Date.now() - startTime;
-        
+
         // Update progress during rendering
         const progress = 30 + Math.min(65, (elapsed / totalVideoDuration) * 65);
         onProgress(Math.round(progress));
-        
+
         if (elapsed >= totalVideoDuration) {
           // Stop all videos
           validVideoElements.forEach(({ video, objectURL }) => {
@@ -380,7 +380,7 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
                 video.currentTime = currentFrameTime;
               } catch (e) {
                 // Ignore errors during loading
-                console.warn(`Video ${index} error setting currentTime:`, e);
+                console.warn(`Video ${originalIndex} error setting currentTime:`, e);
               }
             }
           } else {
@@ -508,8 +508,7 @@ export const createLivePhotoVideo = async (videoClips, layout, filter, customMom
           const filteredData = applyPixelatedFilter(videoCtx, imageData, filter);
           videoCtx.putImageData(filteredData, stripX + borderWidth, yPos);
 
-          // Draw decorations
-          drawVideoPhotoDecorations(videoCtx, stripX, stripWidth, borderWidth, yPos, photoHeight, index, layout, scale);
+          drawVideoPhotoDecorations(videoCtx, stripX, stripWidth, borderWidth, yPos, photoHeight, originalIndex, layout, scale);
         });
 
         // Draw footer
