@@ -38,6 +38,7 @@ const ComicPhotobox = () => {
   // Initialize camera when on camera page
   useEffect(() => {
     if (page === 'camera' && videoRef.current && !stream) {
+      console.log('Photobox Version: 0.0.1');
       startCamera().then((mediaStream) => {
         if (mediaStream) {
           // DON'T start recording here - wait until countdown starts
@@ -117,7 +118,7 @@ const ComicPhotobox = () => {
     try {
       // Wait untuk memastikan MediaRecorder siap
       await new Promise(resolve => setTimeout(resolve, 100));
-      
+
       videoClip = await getVideoClip();
       if (videoClip) {
         console.log(`Video clip ${currentPhotoIndex} captured:`, {
@@ -133,11 +134,11 @@ const ComicPhotobox = () => {
       } else {
         console.warn(`No video clip captured for photo ${currentPhotoIndex}`);
       }
-      
+
       // Wait before restarting to ensure MediaRecorder is fully stopped and cleaned up
       // getVideoClip() menggunakan timeout 300ms, jadi tunggu sedikit lebih lama
       await new Promise(resolve => setTimeout(resolve, 500));
-      
+
       // Restart recording for next photo (if not the last one)
       if (stream && stream.active && currentPhotoIndex < layout - 1) {
         startRecording(stream);
@@ -186,7 +187,7 @@ const ComicPhotobox = () => {
 
     setCurrentPhotoIndex(index);
     setPage('camera');
-    
+
     // Restart camera and recording
     if (stream) {
       stopCamera();
